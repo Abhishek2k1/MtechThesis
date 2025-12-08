@@ -21,7 +21,7 @@ double ****PreMU_MAT, ****P_MAT, ****MU_MAT, ****U_MAT, ****FinalMemMAT, ****A_M
 double SigmaSqr;
 double ****G_MAT;
 int N_SIZE;
-double m, p, q;
+double m, n, p, q;
 float Alpha;
 int ***GroundTruth;
 FILE *fp_data;
@@ -107,15 +107,8 @@ void Read_IP_Image(FILE *fp)
     }
 
     printf("ImageIndex = %d\n", ImageIndex);
-
-    //  No need to skip remaining slices if reading full dataset
 }
 
-/*....................................................................
-   Function: create_img()
-   Purpose : Convert each slice of the 3D image volume into a
-             2D grayscale .pgm image for visualization.
-.....................................................................*/
 void create_img()
 {
     int RowIndex, ColumnIndex, ImageIndex;
@@ -124,7 +117,7 @@ void create_img()
 
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
     {
-        sprintf(File, "Slice%s_%03d.pgm", FileName, ImageIndex);
+        sprintf(File, "%s_%03d.pgm", FileName, ImageIndex);
         fp_display = fopen(File, "w");
         if (fp_display == NULL)
         {
@@ -152,20 +145,12 @@ void create_img()
     printf("\nPGM image generation complete.\n");
 }
 
-/*......................................................................................
-   Function: create_histogram()
-   Purpose : Calculate and save the intensity histogram of the 3D MRI volume.
-              - Bins: 0 to 255
-              - Saves to: "histogram.txt"
-......................................................................................*/
-
 void create_histogram()
 {
     int ImageIndex, RowIndex, ColumnIndex;
-    int hist[256] = {0}; // Initialize histogram array with zeros
+    int hist[256] = {0};
     int val;
 
-    // --- Step 1: Count voxel frequencies ---
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
     {
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
@@ -197,7 +182,7 @@ void create_histogram()
 
     fclose(fp_hist);
 
-    printf("\n✅ Histogram saved to 'histogram.txt'. You can plot it in Excel, Python, or MATLAB.\n");
+    printf(" Histogram saved to 'histogram.txt'.\n");
 }
 
 void Initialize_centre()
@@ -641,6 +626,151 @@ void create_feature()
     printf("\n Feature creation is correct\n");
 }
 
+/*-------------------------------------------------------------------------------------------------------------------------
+    Function: Initialize_MU()
+
+    Purpose:
+      - Allocate and initialize the 4D array PreMU_MAT[Slice][Class][Row][Col]
+      - Provide a *reasonable starting membership* for the fuzzy algorithm
+        based on voxel intensity and the current cluster centers V_MAT.
+
+    Theory:
+      - This is only used for the **first iteration** as "previous" membership.
+      - It gives a strong prior (0.7) to the most likely tissue class and
+        small memberships (0.1) to the remaining ones.
+      - Thresholds are derived from the current cluster centers:
+            t01 ≈ boundary between class 0 and 1
+            t12 ≈ boundary between class 1 and 2
+            t23 ≈ boundary between class 2 and 3
+        using simple midpoints of the (assumed ordered) centers.
+-------------------------------------------------------------------------------------------------------------------------*/
+void Initialize_MU()
+{
+    int ClassIndex, RowIndex, ColumnIndex, ImageIndex;
+
+    /*------------------------ 1. Allocate memory for PreMU_MAT ------------------------*/
+    /* PreMU_MAT dimensions: [TN][CLASS][ROW][COL] */
+
+    PreMU_MAT = (double ****)malloc(TN * sizeof(double ***));
+    if (PreMU_MAT == NULL)
+    {
+        printf("\nCan't allocate space for previous MU matrix ...\n");
+        exit(1);
+    }
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        PreMU_MAT[ImageIndex] = (double ***)malloc(CLASS * sizeof(double **));
+        if (PreMU_MAT[ImageIndex] == NULL)
+        {
+            printf("\nCan't allocate space for previous MU matrix ...\n");
+            exit(1);
+        }
+
+        for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+        {
+            PreMU_MAT[ImageIndex][ClassIndex] = (double **)malloc(ROW * sizeof(double *));
+            if (PreMU_MAT[ImageIndex][ClassIndex] == NULL)
+            {
+                printf("\nCan't allocate space for previous MU matrix ...\n");
+                exit(1);
+            }
+
+            for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            {
+                PreMU_MAT[ImageIndex][ClassIndex][RowIndex] =
+                    (double *)malloc(COL * sizeof(double));
+                if (PreMU_MAT[ImageIndex][ClassIndex][RowIndex] == NULL)
+                {
+                    printf("\nCan't allocate space for previous MU matrix ...\n");
+                    exit(1);
+                }
+            }
+        }
+    }
+
+    /*------------------------ 2. Build intensity thresholds from V_MAT ------------------------*/
+    /*
+       We assume V_MAT[ClassIndex][0] stores the "mean intensity" of each class
+       in feature dimension 0 and that classes are ordered like:
+            0 → Background
+            1 → CSF
+            2 → GM
+            3 → WM
+
+       Then we define boundaries as midpoints between consecutive centers:
+            t01 = (V0 + V1) / 2
+            t12 = (V1 + V2) / 2
+            t23 = (V2 + V3) / 2
+    */
+    double v0 = V_MAT[0][0];
+    double v1 = V_MAT[1][0];
+    double v2 = V_MAT[2][0];
+    double v3 = V_MAT[3][0];
+
+    double t01 = 0.5 * (v0 + v1); /* boundary: class 0 vs 1 */
+    double t12 = 0.5 * (v1 + v2); /* boundary: class 1 vs 2 */
+    double t23 = 0.5 * (v2 + v3); /* boundary: class 2 vs 3 */
+
+    /*------------------------ 3. Initialize membership values ------------------------*/
+    /*
+       For each voxel, we look at intensity (feature 0) and assign:
+
+         - High membership (0.70) to the "most probable" tissue class
+         - Small membership (0.10) to the others
+
+       This is just a heuristic initialization; the iterative algorithm
+       will refine these values using the full model.
+    */
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+
+                double intensity = F_MAT_INPUT[ImageIndex][RowIndex][ColumnIndex][0];
+
+                if (intensity <= t01)
+                {
+                    /* Region most likely Background (class 0) */
+                    PreMU_MAT[ImageIndex][0][RowIndex][ColumnIndex] = 0.70;
+                    PreMU_MAT[ImageIndex][1][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][2][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][3][RowIndex][ColumnIndex] = 0.10;
+                }
+                else if (intensity <= t12)
+                {
+                    /* Region most likely CSF (class 1) */
+                    PreMU_MAT[ImageIndex][0][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][1][RowIndex][ColumnIndex] = 0.70;
+                    PreMU_MAT[ImageIndex][2][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][3][RowIndex][ColumnIndex] = 0.10;
+                }
+                else if (intensity <= t23)
+                {
+                    /* Region most likely GM (class 2) */
+                    PreMU_MAT[ImageIndex][0][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][1][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][2][RowIndex][ColumnIndex] = 0.70;
+                    PreMU_MAT[ImageIndex][3][RowIndex][ColumnIndex] = 0.10;
+                }
+                else
+                {
+                    /* Region most likely WM (class 3) */
+                    PreMU_MAT[ImageIndex][0][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][1][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][2][RowIndex][ColumnIndex] = 0.10;
+                    PreMU_MAT[ImageIndex][3][RowIndex][ColumnIndex] = 0.70;
+                }
+            }
+        }
+    }
+
+    // printf("\n Initialize_MU() Completed\n");
+}
+
 /*----------------------------------------------------------------------
   calculate_sigma()
 
@@ -871,6 +1001,7 @@ void AllocateMemoryForAlgorithm()
         }
     }
 }
+
 /*---------------------------------------------------------------------------------------------------------
     Function: compute_zeta()
 
@@ -1198,6 +1329,7 @@ void CalculateAAbarMatrix()
         }
     }
 }
+
 /*-------------------------------------------------------------------------------------------------------------------------
     Function: CalculateGMatrix()
 
@@ -1504,6 +1636,7 @@ void CalculateMiuMatrix()
 {
     int ImageIndex, RowIndex, ColumnIndex, ClassIndex1, ClassIndex2;
     double Aval, NeuVal, DenoVal, SumVal, SumMiu, MiuVal;
+    const double eps = 1e-12;
 
     /* Loop through 3D image volume */
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
@@ -1528,8 +1661,12 @@ void CalculateMiuMatrix()
                     Aval = A_MAT[ImageIndex][ClassIndex1][RowIndex][ColumnIndex];
                     if (Aval >= 0.999999)
                         Aval = 0.999999;
+                    if (Aval <= 0.0)
+                        Aval = 0.0;
 
-                    NeuVal = 1.0 - Aval; /* numerator term δ_k(i) */
+                    NeuVal = 1.0 - Aval;
+                    if (NeuVal < eps)
+                        NeuVal = eps;
 
                     /*--------------------------------------------------------------
                         2) Compute denominator:
@@ -1541,7 +1678,14 @@ void CalculateMiuMatrix()
                     for (ClassIndex2 = 0; ClassIndex2 < CLASS; ClassIndex2++)
                     {
                         double Aval_h = A_MAT[ImageIndex][ClassIndex2][RowIndex][ColumnIndex];
-                        Aval_h = 1.0 - Aval_h; /* δ_h(i) */
+                        if (Aval_h >= 0.999999)
+                            Aval_h = 0.999999;
+                        if (Aval_h <= 0.0)
+                            Aval_h = 0.0;
+
+                        Aval_h = 1.0 - Aval_h;
+                        if (Aval_h < eps)
+                            Aval_h = eps;
 
                         /* ratio of distances raised to exponent */
                         DenoVal = NeuVal / Aval_h;
@@ -1555,7 +1699,10 @@ void CalculateMiuMatrix()
 
                                μ_k(i) = 1 / Σ_h(...)
                     --------------------------------------------------------------*/
-                    MiuVal = 1.0 / SumVal;
+                    if (SumVal <= eps)
+                        MiuVal = 1.0 / (double)CLASS; /* fallback: uniform */
+                    else
+                        MiuVal = 1.0 / SumVal;
                     MU_MAT[ImageIndex][ClassIndex1][RowIndex][ColumnIndex] = MiuVal;
 
                     /*--------------------------------------------------------------
@@ -1587,50 +1734,104 @@ void CalculateMiuMatrix()
     } // ImageIndex
 }
 
+/*-------------------------------------------------------------------------------------------------------------------------
+    Function: CalculateCentres()
+
+    Purpose:
+        Update cluster centroids V_k for each class k and each feature dimension f
+        based on the new fuzzy memberships and the modified entropy-regularized model.
+
+    Theory:
+        This step performs the **M-step** of the optimization process.
+
+        The original objective function combines:
+
+            ✔ Data similarity term (Gaussian form based on A_MAT)
+            ✔ Neighborhood constraint (via Ā_MAT and G_MAT)
+            ✔ Probabilistic correction term (P_MAT)
+            ✔ Entropy-based adaptive weighting (implicit via ζ^n → already inside A)
+
+        The centroid update formula follows a **weighted average**:
+
+                V_k(f) =   Σ_i ( W(i,k) * X_i(f) )
+                           ---------------------
+                           Σ_i ( W(i,k) )
+
+        where:
+            - X_i(f)       = feature value of voxel i for feature f
+            - W(i,k)       = adaptive weight derived from μ, P, A, Ā, ζ
+            - MeanF(i,f)   = local average feature to enforce spatial smoothness
+
+        The numerator and denominator include contributions from:
+
+            ▸ Membership confidence (μ^m)
+            ▸ Local consistency (A and Ā matrices)
+            ▸ Probability estimate (P^m)
+            ▸ Entropy-driven correction (log(P)) — increases stability when P≈0.5
+            ▸ Neighborhood mean to preserve region continuity
+
+        The final result ensures that cluster centers move smoothly toward regions
+        with strong spatial and fuzzy membership support.
+
+-------------------------------------------------------------------------------------------------------------------------*/
 void CalculateCentres()
 {
     int ClassIndex, FspaceIndex, ImageIndex, RowIndex, ColumnIndex;
     double FVal, MeanFVal, AVal, AbarVal, MiuVal, PVal, LogPVal, GVal;
-    double FirstTerm, SecPart, SecTerm, ThrdTerm, ForthTerm, Deno, Deno2, Neu;
-    double SumDeno, SumNeu, VVal;
+    double FirstTerm, SecPart, SecTerm, ThrdTerm, ForthTerm;
+    double Deno, Deno2, Neu, SumDeno, SumNeu, VVal;
 
+    /* Loop over each cluster (class) */
     for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
     {
+        /* Update each feature dimension independently */
         for (FspaceIndex = 0; FspaceIndex < F_SPACE; FspaceIndex++)
         {
             SumDeno = 0.0;
             SumNeu = 0.0;
 
+            /* Loop over every voxel in the 3D volume */
             for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
             {
                 for (RowIndex = 0; RowIndex < ROW; RowIndex++)
                 {
                     for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
                     {
+                        /* ------------------------- Fetch required values ------------------------- */
+                        FVal = F_MAT_INPUT[ImageIndex][RowIndex][ColumnIndex][FspaceIndex];    // raw feature
+                        MeanFVal = Mean_F_MAT[ImageIndex][RowIndex][ColumnIndex][FspaceIndex]; // spatially averaged feature
+                        AVal = A_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];           // similarity term
+                        AbarVal = Abar_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];     // spatial similarity
+                        MiuVal = MU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];        // fuzzy membership
+                        PVal = P_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];           // probability assignment
+                        GVal = G_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];           // neighborhood reinforcement
 
-                        // Fetch feature and auxiliary data
-                        FVal = F_MAT_INPUT[ImageIndex][RowIndex][ColumnIndex][FspaceIndex];
-                        MeanFVal = Mean_F_MAT[ImageIndex][RowIndex][ColumnIndex][FspaceIndex];
-                        AVal = A_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
-                        AbarVal = Abar_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
-                        MiuVal = MU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
-                        PVal = P_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
-                        GVal = G_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
+                        /* -------------------------- Weight Components ---------------------------- */
 
-                        // Compute weighting terms
+                        /* Contribution from fuzzy membership confidence */
                         FirstTerm = Alpha * pow(MiuVal, m) * AVal;
+
+                        /* Contribution from probabilistic assignment */
                         SecPart = (1 - Alpha) * pow(PVal, m);
+
+                        /* Penalty when nonlocal similarity disagrees (spatial smoothness) */
                         SecTerm = SecPart * (m * (1 - AbarVal));
 
-                        // Entropy correction
+                        /* Entropy-based correction: increases effect when classification uncertain */
                         PVal = pow(PVal, m);
                         LogPVal = (PVal >= 0.1) ? log10(PVal) : -1.0;
                         ThrdTerm = m * PVal * (1 + LogPVal);
+
+                        /* Neighborhood agreement support (+ reinforcement of smoothness) */
                         ForthTerm = SecPart * AbarVal;
 
-                        // Combine terms for numerator and denominator
+                        /* --------------------- Full Weight Expression ---------------------------- */
+
+                        /* Denominator weight W_k(i) */
                         Deno2 = (FirstTerm + ThrdTerm);
                         Deno = (Deno2 - SecTerm + ForthTerm);
+
+                        /* Numerator uses raw signal + spatial mean correction */
                         Neu = ((Deno2 * FVal) + ((ForthTerm - SecTerm) * MeanFVal));
 
                         SumDeno += Deno;
@@ -1639,76 +1840,1073 @@ void CalculateCentres()
                 }
             }
 
-            // Compute new cluster center
+            /* ----------------------- Compute Updated Cluster Center --------------------------- */
+
             if (fabs(SumDeno) > ZeroThreshold)
                 VVal = SumNeu / SumDeno;
             else
             {
-                printf("\nError: Deno too small (%.5f)\n", SumDeno);
+                printf("\nError: Denominator too small (SumDeno = %.5f)\n", SumDeno);
                 exit(1);
             }
 
-            // Store and validate
+            /* Store result after sanity check */
             if (VVal > 0.0 && VVal <= 255.0)
                 NewV_MAT[ClassIndex][FspaceIndex] = VVal;
             else
             {
-                printf("\nInvalid cluster center V[%d][%d] = %.3f\n", ClassIndex, FspaceIndex, VVal);
+                printf("\nInvalid centroid computed: NewV[%d][%d] = %.3f\n",
+                       ClassIndex, FspaceIndex, VVal);
                 exit(1);
             }
         }
     }
 }
 
+/*-------------------------------------------------------------------------------------------------------------------------------
+  Function: DisplayClusterCenters()
+
+  Purpose:
+    - Print updated cluster center values V_new after each iteration.
+    - These centers represent the "mean feature values" for each class (e.g., background, CSF, GM, WM).
+    - In the new mathematical formulation, these centers are influenced not only by membership μ_ik
+      and spatial term but also by the entropy term ζ^n, meaning centers may shift more smoothly or aggressively
+      depending on image uncertainty.
+
+  Notes:
+    - CLASS typically = 4 (Background, CSF, GM, WM)
+    - F_SPACE dimensions indicate how many features were used.
+      (Feature 0 is usually raw intensity; others may be gradient, texture, filtered outputs, etc.)
+    - This does NOT modify the model — only prints results for monitoring.
+
+-------------------------------------------------------------------------------------------------------------------------------*/
+void DisplayClusterCenters()
+{
+    printf("\n------------------ Updated Cluster Centers (Entropy-Driven Model) ------------------\n");
+
+    for (int ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+    {
+        printf("\nClass %d Centers:", ClassIndex);
+
+        for (int FspaceIndex = 0; FspaceIndex < F_SPACE; FspaceIndex++)
+        {
+            printf("  V[%d][%d] = %.3f",
+                   ClassIndex, FspaceIndex, NewV_MAT[ClassIndex][FspaceIndex]);
+        }
+    }
+
+    printf("\n------------------------------------------------------------------------------------\n\n");
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: CalculateErrorInCentres()
+
+    Purpose:
+        - Measures how much the cluster centers changed between the previous iteration and the current one.
+        - Used as a convergence check in the entropy-regularized segmentation algorithm.
+
+    Notes About the New Model:
+        - In the new framework, centers (V) are influenced not only by the feature distance
+          and fuzzy membership μ, but also the spatial term, probability term (P), and entropy term ζ^n.
+        - Therefore, this error represents the "stability" of the entropy-controlled model:
+              If the change in V is very small, the algorithm has stabilized.
+        - The formula remains based on Euclidean distance between old and new V for each feature dimension.
+
+    Old Meaning:  Only tracks basic FCM prototype update.
+    New Meaning:  Tracks stability in entropy-aware clustering dynamics.
+
+    Returns:
+        - A scalar double representing total shift in all cluster centers.
+        - Used in:      while(Error > ErrorThreshold && iteration < MaxIter)
+
+-------------------------------------------------------------------------------------------------------------------------------*/
+double CalculateErrorInCentres()
+{
+    double Error = 0.0;
+
+    for (int ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+    {
+        double Sum = 0.0;
+
+        // Compute squared difference for each feature dimension of the center
+        for (int FspaceIndex = 0; FspaceIndex < F_SPACE; FspaceIndex++)
+        {
+            double diff = NewV_MAT[ClassIndex][FspaceIndex] - V_MAT[ClassIndex][FspaceIndex];
+            Sum += diff * diff;
+        }
+
+        // Convert sum of squares to Euclidean distance
+        Error += sqrt(Sum);
+    }
+
+    return Error;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: CopyNewVToPreV()
+
+    Purpose:
+        - After each iteration of the entropy-regularized fuzzy clustering process,
+          this function updates the old cluster centers (V_MAT) using the newly computed
+          values (NewV_MAT).
+
+    Importance in New Mathematical Model:
+        - The new center computation includes:
+              • Feature similarity term
+              • Spatial neighborhood information
+              • Fuzzy membership μ^m
+              • Probability term P^m
+              • Entropy-driven correction (ζⁿ)
+          ⇒ Therefore, V_MAT represents an entropy–aware, spatially smooth prototype.
+
+        - Updating V_MAT ensures the next iteration uses the most recent model knowledge.
+
+    When it is executed:
+        - Only when the change in center error (from CalculateErrorInCentres())
+          is above the defined tolerance threshold.
+        - This prevents unnecessary oscillation or noise-driven movement of centers.
+
+    Notes:
+        - No normalization clipping is needed because centers are already validated
+          during CalculateCentres().
+        - Centers must carry forward iteration history to ensure convergence.
+
+-------------------------------------------------------------------------------------------------------------------------------*/
+void CopyNewVToPreV()
+{
+    for (int ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+    {
+        for (int FspaceIndex = 0; FspaceIndex < F_SPACE; FspaceIndex++)
+        {
+            /* Transfer the entropy-updated prototype to be used in next iteration */
+            V_MAT[ClassIndex][FspaceIndex] = NewV_MAT[ClassIndex][FspaceIndex];
+        }
+    }
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: CopyNewMiuToPreMiu()
+
+    Purpose:
+        - After each outer iteration of the algorithm, this function:
+              PreMU_MAT  ←  MU_MAT
+
+        - That is, it copies the **current fuzzy memberships μₖ(x)** to the
+          "previous" membership matrix, which is then used in:
+              • G_MAT computation (spatial-neighborhood reliability)
+              • ζ (zeta) entropy term via MU_MAT (and P_MAT)
+              • The next iteration’s neighborhood-based regularization
+
+    Role in the NEW Model:
+        - In the new formulation, G_MAT is computed using PreMU_MAT:
+              G(i,k) ∝ Σ_neighbors μₖ(neighbor) · A(neighbor,k)
+          i.e., it reflects how strongly the neighbors support class k.
+
+        - If we did NOT update PreMU_MAT, then:
+              • G_MAT would keep using old memberships
+              • P_MAT (which is normalized G) would be inconsistent
+              • ζ (since it depends on μ and p) would not follow the true current state
+          ⇒ the algorithm would not converge properly or would behave chaotically.
+
+    When this is called:
+        - After each full update of MU_MAT (CalculateMiuMatrix),
+          and after we decide to accept the current iteration
+          (i.e., when Error > ErrorThreshold and we keep iterating).
+
+    Notes:
+        - No extra normalization is done here because MU_MAT is already guaranteed to
+          satisfy:   Σ_k μₖ(x) = 1  (within a small tolerance) in CalculateMiuMatrix().
+        - This function just transfers those validated membership values.
+
+-------------------------------------------------------------------------------------------------------------------------------*/
+void CopyNewMiuToPreMiu()
+{
+    int ImageIndex, RowIndex, ColumnIndex, ClassIndex;
+
+    /* Loop over 4D membership volume:
+       [ImageIndex][ClassIndex][RowIndex][ColumnIndex] */
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+                {
+                    /* Store current membership μ into "previous" membership:
+                       used in the next iteration for G, P, ζ, etc. */
+                    PreMU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex] =
+                        MU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
+                }
+            }
+        }
+    }
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: write_image_array()
+
+    Purpose:
+        - Converts fuzzy membership values (MU_MAT) into a final crisp segmentation.
+        - For each voxel x, final class label = argmax_k ( μₖ(x) ).
+        - Result is stored in img_cluster (integer class map).
+
+    Notes (NEW MODEL CONTEXT):
+        - Even though the new objective introduces entropy (ζ), probability (P), and
+          spatial smoothness (G), the final hard segmentation rule does NOT change.
+        - MU_MAT already contains the final optimized fuzzy memberships from CalculateMiuMatrix().
+        - This step simply assigns each voxel to the most likely anatomical class:
+            0 = Background
+            1 = CSF
+            2 = Gray Matter
+            3 = White Matter
+
+    Output:
+        - img_cluster[ImageIndex][Row][Col] → integer segmentation volume
+          used later for exporting GM/WM/CSF masks or PGM files.
+
+-------------------------------------------------------------------------------------------------------------------------------*/
+void write_image_array()
+{
+    int ImageIndex, RowIndex, ColumnIndex, ClassIndex;
+    float mem;
+    int best_class;
+
+    /*---------------------------------------------------------
+      Allocate memory for crisp segmentation array (3D Volume)
+    ---------------------------------------------------------*/
+    img_cluster = (int ***)malloc(TN * sizeof(int **));
+    if (!img_cluster)
+    {
+        printf("\nError: Memory allocation failed for img_cluster.\n");
+        exit(1);
+    }
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        img_cluster[ImageIndex] = (int **)malloc(ROW * sizeof(int *));
+        if (!img_cluster[ImageIndex])
+        {
+            printf("\nError: Memory allocation failed for img_cluster slice.\n");
+            exit(1);
+        }
+
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            img_cluster[ImageIndex][RowIndex] = (int *)malloc(COL * sizeof(int));
+            if (!img_cluster[ImageIndex][RowIndex])
+            {
+                printf("\nError: Memory allocation failed for img_cluster rows.\n");
+                exit(1);
+            }
+        }
+    }
+
+    /*----------------------------------------
+      Initialize array (optional, safety step)
+    -----------------------------------------*/
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+                img_cluster[ImageIndex][RowIndex][ColumnIndex] = -1; /* undefined */
+
+    /*---------------------------------------------------------------------------
+       Assign each voxel to the class with highest fuzzy membership μₖ(x)
+    ---------------------------------------------------------------------------*/
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                mem = -1.0;
+                best_class = 0;
+
+                for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+                {
+                    if (MU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex] > mem)
+                    {
+                        mem = MU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
+                        best_class = ClassIndex;
+                    }
+                }
+
+                /* Final hard label storage */
+                img_cluster[ImageIndex][RowIndex][ColumnIndex] = best_class;
+            }
+        }
+    }
+
+    printf("\n✔ Final segmentation class map generated successfully.\n");
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: overwrite_input_image()
+
+    Purpose:
+        - Replace the original intensity at each voxel with the average of its feature vector components.
+        - Useful when F_SPACE > 1 (texture + intensity features), so the image becomes feature-smoothed.
+        - After segmentation, this function prepares the image volume for visualization/output.
+
+    Notes (New Model Context):
+        - Features in F_MAT_INPUT may come from:
+              intensity, gradient, spatial priors, entropy-weighted terms, etc.
+        - This function compresses the multidimensional feature space back to a single gray value.
+
+    Output:
+        - ImageVolume[][][] now contains smoothed/reconstructed voxel intensities.
+-------------------------------------------------------------------------------------------------------------------------------*/
+void overwrite_input_image()
+{
+    int ImageIndex, RowIndex, ColumnIndex, FspaceIndex;
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                double sum = 0.0; /* reset per voxel */
+
+                /* Average feature values */
+                for (FspaceIndex = 0; FspaceIndex < F_SPACE; FspaceIndex++)
+                {
+                    sum += F_MAT_INPUT[ImageIndex][RowIndex][ColumnIndex][FspaceIndex];
+                }
+
+                /* Store averaged feature as reconstructed intensity */
+                ImageVolume[ImageIndex][RowIndex][ColumnIndex] = sum / (double)F_SPACE;
+            }
+        }
+    }
+
+    printf("\n✔ ImageVolume successfully overwritten using averaged feature values.\n");
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: segmented_accuracy()
+
+    Purpose:
+        - Evaluates segmentation quality by comparing:
+              (A) Predicted segmentation  → img_cluster[][][]
+              (B) Ground truth labels     → GroundTruth[][][]
+        - Computes:
+              • Dice Similarity Index (global)
+              • Per-class segmentation accuracy (SA)
+              • Tissue-specific Dice score (CSF, GM, WM)
+
+    Formula used:
+        Dice(Class k) = 2 * |Predicted ∩ GroundTruth| / (|Predicted| + |GroundTruth|)
+        SA(Class k)   = |Predicted ∩ GroundTruth| / |GroundTruth|
+
+    Notes:
+        - CLASS = 4 → { Background, CSF, GM, WM }
+        - Requires GroundTruth to be loaded before calling.
+        - Should be skipped if no GT is available.
+
+    Output:
+        Prints accuracy statistics to terminal.
+
+-------------------------------------------------------------------------------------------------------------------------------*/
+float segmented_accuracy()
+{
+    if (GroundTruth == NULL)
+    {
+        printf("\n⚠ Skipping accuracy calculation — No Ground Truth available.\n");
+        return -1.0;
+    }
+
+    int ImageIndex, RowIndex, ColumnIndex, ClassIndex;
+    int class_pt, class_gt;
+
+    double si = 0.0;
+    double Similarity_index;
+
+    /* Allocate counters */
+    ori_pt = (int *)calloc(CLASS, sizeof(int));           // |prediction per class|
+    ori_gt = (int *)calloc(CLASS, sizeof(int));           // |ground truth per class|
+    common = (int *)calloc(CLASS, sizeof(int));           // |intersection per class|
+    double *sa = (double *)calloc(CLASS, sizeof(double)); // per-class accuracy
+
+    /*-----------------------------------------
+      Count predicted label frequency per class
+    ------------------------------------------*/
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                class_pt = img_cluster[ImageIndex][RowIndex][ColumnIndex];
+                if (class_pt >= 0 && class_pt < CLASS)
+                    ori_pt[class_pt]++;
+            }
+
+    /*-----------------------------------------
+      Count ground truth label frequency
+    ------------------------------------------*/
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                class_gt = GroundTruth[ImageIndex][RowIndex][ColumnIndex];
+                if (class_gt >= 0 && class_gt < CLASS)
+                    ori_gt[class_gt]++;
+            }
+
+    /*-----------------------------------------
+      Count correct matches (intersection)
+    ------------------------------------------*/
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                if (GroundTruth[ImageIndex][RowIndex][ColumnIndex] ==
+                    img_cluster[ImageIndex][RowIndex][ColumnIndex])
+                {
+                    class_pt = img_cluster[ImageIndex][RowIndex][ColumnIndex];
+                    common[class_pt]++;
+                }
+            }
+
+    /*-----------------------------------------
+       Compute Dice similarity and Per-Class SA
+    ------------------------------------------*/
+    printf("\n================ Segmentation Accuracy Report ================\n");
+
+    for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+    {
+        double deno = (double)(ori_pt[ClassIndex] + ori_gt[ClassIndex]);
+        double dice = (deno > 0) ? (2.0 * common[ClassIndex]) / deno : 0.0;
+        double accuracy = (ori_gt[ClassIndex] > 0) ? (double)common[ClassIndex] / ori_gt[ClassIndex] : 0.0;
+
+        sa[ClassIndex] = accuracy;
+        si += dice;
+
+        printf("\nClass %d → Dice: %.4f   |   Accuracy: %.4f",
+               ClassIndex, dice, accuracy);
+    }
+
+    Similarity_index = (si / CLASS) * 100.0;
+
+    printf("\n--------------------------------------------------------------");
+    printf("\nOverall Dice Similarity Index = %.2f%%", Similarity_index);
+    printf("\n==============================================================\n");
+
+    return Similarity_index;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: create_clusterfilescsf()
+
+    Purpose:
+        - For each slice (ImageIndex), generate a binary PGM mask of CSF voxels.
+        - Uses the hard cluster map: img_cluster[ImageIndex][RowIndex][ColumnIndex]
+        - Convention:
+              class 1 → CSF  → written as 255 (white)
+              others  → 0    → background
+
+    Output:
+        Files named: "IBSR1_csf_<slice>.pgm"
+        where <slice> = 0, 1, ..., TN-1
+
+    Notes:
+        - Assumes img_cluster has already been computed by write_image_array().
+        - Uses ImageVolume as a temporary buffer for saving to PGM.
+-------------------------------------------------------------------------------------------------------------------------------*/
+int create_clusterfilescsf()
+{
+    int ImageIndex, RowIndex, ColumnIndex;
+    char File[100];
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        /* Build output filename for this slice */
+        sprintf(File, "%s_CSF_%03d.pgm", FileName, ImageIndex);
+
+        printf("\nCSF mask file: %s\n", File);
+
+        /* Open output PGM file */
+        fp_csflst = fopen(File, "w");
+        if (fp_csflst == NULL)
+        {
+            printf("Can't open the CSF file: %s\n", File);
+            exit(1);
+        }
+
+        /* Write PGM header (ASCII P2) */
+        fprintf(fp_csflst, "P2\n");
+        fprintf(fp_csflst, "# CSF segmentation mask generated from clustering\n");
+        fprintf(fp_csflst, "%d %d\n", COL, ROW);
+        fprintf(fp_csflst, "255\n");
+
+        /* For each voxel: 255 if CSF (class 1), else 0 */
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                if (img_cluster[ImageIndex][RowIndex][ColumnIndex] == 1)
+                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 255.0;
+                else
+                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 0.0;
+
+                fprintf(fp_csflst, "%d ",
+                        (int)ImageVolume[ImageIndex][RowIndex][ColumnIndex]);
+            }
+            fprintf(fp_csflst, "\n");
+        }
+
+        fclose(fp_csflst);
+        printf("CSF slice %d written successfully.\n", ImageIndex);
+    }
+
+    return 0;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: create_clusterfilesgm()
+
+    Purpose:
+        - For each slice (ImageIndex), generate a binary PGM mask of GM (Gray Matter) voxels.
+        - Uses the hard cluster labels: img_cluster[ImageIndex][RowIndex][ColumnIndex]
+        - Convention:
+              class 2 → GM → written as 255 (white)
+              others  → 0  → background
+
+    Output:
+        Files named: "IBSR1_GM_<slice>.pgm"
+        where <slice> = 0, 1, ..., TN-1
+
+    Notes:
+        - Assumes img_cluster has already been filled by write_image_array().
+        - Uses ImageVolume as a temporary buffer for writing the PGM image.
+-------------------------------------------------------------------------------------------------------------------------------*/
+int create_clusterfilesgm()
+{
+    int ImageIndex, RowIndex, ColumnIndex;
+    char File[100];
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        /* Build output filename for this slice */
+        sprintf(File, "%s_GM_%03d.pgm", FileName, ImageIndex);
+
+        printf("\nGM mask file: %s\n", File);
+
+        /* Open output PGM file for this slice */
+        fp_gmlst = fopen(File, "w");
+        if (fp_gmlst == NULL)
+        {
+            printf("Can't open the GM file: %s\n", File);
+            exit(1);
+        }
+
+        /* Write PGM header (ASCII P2 format) */
+        fprintf(fp_gmlst, "P2\n");
+        fprintf(fp_gmlst, "# GM segmentation mask generated from clustering\n");
+        fprintf(fp_gmlst, "%d %d\n", COL, ROW);
+        fprintf(fp_gmlst, "255\n");
+
+        /* For each voxel: 255 if GM (class 2), otherwise 0 */
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                if (img_cluster[ImageIndex][RowIndex][ColumnIndex] == 2)
+                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 255.0;
+                else
+                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 0.0;
+
+                fprintf(fp_gmlst, "%d ",
+                        (int)ImageVolume[ImageIndex][RowIndex][ColumnIndex]);
+            }
+            fprintf(fp_gmlst, "\n");
+        }
+
+        fclose(fp_gmlst);
+        printf("GM slice %d written successfully.\n", ImageIndex);
+    }
+
+    return 0;
+}
+
+/*-------------------------------------------------------------------------------------------------------------------------------
+    Function: create_clusterfileswm()
+
+    Purpose:
+        - For each slice (ImageIndex), generate a binary PGM mask of WM (White Matter) voxels.
+        - Uses the hard cluster labels: img_cluster[ImageIndex][RowIndex][ColumnIndex]
+        - Convention:
+              class 3 → WM → written as 255 (white)
+              others  → 0  → background
+
+    Output:
+        Files named: "IBSR1_WM_<slice>.pgm"
+        where <slice> = 0, 1, ..., TN-1
+
+    Notes:
+        - Assumes img_cluster has already been filled by write_image_array().
+        - Uses ImageVolume as a temporary buffer for writing the PGM image.
+-------------------------------------------------------------------------------------------------------------------------------*/
+int create_clusterfileswm()
+{
+    int ImageIndex, RowIndex, ColumnIndex;
+    char File[100];
+
+    /* Loop over all slices in the 3D volume */
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        /* Build output filename for this slice */
+        sprintf(File, "%s_WM_%03d.pgm", FileName, ImageIndex);
+
+        printf("\nWM mask file: %s\n", File);
+
+        /* Open output PGM file for this slice */
+        fp_wmlst = fopen(File, "w");
+        if (fp_wmlst == NULL)
+        {
+            printf("Can't open the WM file: %s\n", File);
+            exit(1);
+        }
+
+        /* Write PGM header (ASCII P2 format) */
+        fprintf(fp_wmlst, "P2\n");
+        fprintf(fp_wmlst, "# WM segmentation mask generated from clustering\n");
+        fprintf(fp_wmlst, "%d %d\n", COL, ROW);
+        fprintf(fp_wmlst, "255\n");
+
+        /* For each voxel: 255 if WM (class 3), otherwise 0 */
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                if (img_cluster[ImageIndex][RowIndex][ColumnIndex] == 3)
+                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 255.0;
+                else
+                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 0.0;
+
+                fprintf(fp_wmlst, "%d ",
+                        (int)ImageVolume[ImageIndex][RowIndex][ColumnIndex]);
+            }
+            fprintf(fp_wmlst, "\n");
+        }
+
+        fclose(fp_wmlst);
+        printf("WM slice %d written successfully.\n", ImageIndex);
+    }
+
+    return 0;
+}
+
+/*------------------------------------------------------------------------------------------------------------------------------*
+ *                                   Vpc_calculation (Fuzzy Partition Coefficient)                                             *
+ *------------------------------------------------------------------------------------------------------------------------------*
+ * Vpc measures how "crisp" the fuzzy partition is:
+ *
+ *      Vpc = (1 / N) * Σ_i Σ_k ( μ_ik^2 )
+ *
+ * where:
+ *   - μ_ik is the membership of voxel i to class k (MU_MAT)
+ *   - N  = total number of voxels (TN * ROW * COL)
+ *
+ * Interpretation:
+ *   - Vpc → 1  : memberships are very sharp (close to 0 or 1) → crisp clustering
+ *   - Vpc → 1/C: memberships are very fuzzy, equally shared among classes
+ *   - Larger Vpc is better (clearer partition).
+ *------------------------------------------------------------------------------------------------------------------------------*/
+void calculate_vpc()
+{
+    int ImageIndex, RowIndex, ColumnIndex, ClassIndex;
+    double sum = 0.0; /* accumulator for Σ μ_ik^2 */
+    double temp;
+    double ts; /* total number of voxels N = TN * ROW * COL */
+
+    /* Loop over entire 3D volume and all classes */
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+                {
+                    /* μ_ik^2 for current voxel and class */
+                    temp = pow(MU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex], 2.0);
+                    sum += temp;
+                }
+            }
+        }
+    }
+
+    /* Normalise by total number of voxels N */
+    ts = (double)(TN * ROW * COL);
+    sum = sum / ts;
+
+    printf("\n\tFuzzy Partition Coefficient (Vpc) = %f\n", sum);
+}
+
+/*-----------------------------------------------------------------------------------------------------------------------------*
+ *                                          Vpe_calculation (Partition Entropy)                                               *
+ *-----------------------------------------------------------------------------------------------------------------------------*
+ * Vpe measures the fuzziness of the partition:
+ *
+ *      Vpe = (1 / N) * Σ_i Σ_k [ - μ_ik * ln( μ_ik ) ]
+ *
+ * where:
+ *   - μ_ik is the membership of voxel i to class k (MU_MAT)
+ *   - N  = total number of voxels (TN * ROW * COL)
+ *
+ * Implementation details:
+ *   - For μ_ik == 0, the contribution is defined as 0 (limit of x ln x as x → 0).
+ *
+ * Interpretation:
+ *   - Vpe is larger when memberships are more fuzzy.
+ *   - Lower Vpe is usually preferred (crisper clustering).
+ *-----------------------------------------------------------------------------------------------------------------------------*/
+void calculate_vpe()
+{
+    int ImageIndex, RowIndex, ColumnIndex, ClassIndex;
+    double sum = 0.0; /* accumulator for Σ -μ_ik ln(μ_ik) */
+    double temp;
+    double ts; /* total number of voxels N = TN * ROW * COL */
+
+    /* Loop over entire 3D volume and all classes */
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
+                {
+                    double mu = MU_MAT[ImageIndex][ClassIndex][RowIndex][ColumnIndex];
+
+                    if (mu > 0.0)
+                    {
+                        /* contribution: - μ ln μ */
+                        temp = -(mu * log(mu));
+                    }
+                    else
+                    {
+                        /* define 0 * ln(0) = 0 */
+                        temp = 0.0;
+                    }
+
+                    sum += temp;
+                }
+            }
+        }
+    }
+
+    /* Normalise by total number of voxels N */
+    ts = (double)(TN * ROW * COL);
+    sum = sum / ts;
+
+    printf("\n\tPartition Entropy (Vpe) = %f\n\n", sum);
+}
+
+/*--------------------------------------------------------------------------------------------------------------------------------------*
+ *                                              FCM main loop (new model)                                                              *
+ *--------------------------------------------------------------------------------------------------------------------------------------*
+ * Steps per iteration:
+ *   1) build feature volume F_MAT_INPUT (once)                         -> create_feature()
+ *   2) initialise cluster centres V_MAT                                -> Initialize_centre()
+ *   3) initialise previous memberships PreMU_MAT (heuristic)           -> Initialize_MU()
+ *   4) allocate all algorithmic buffers (D, A, MU, P, G, ZETA, etc.)   -> AllocateMemoryForAlgorithm()
+ *
+ *   Then for each iteration:
+ *      a) compute distances & neighbourhood means      -> CalculateEuclideanAndMeanDistanceBtVoxelsAndCentres()
+ *      b) compute A and Abar (uses D, D_neigh, ζ^n)    -> CalculateAAbarMatrix()
+ *      c) compute G from PreMU and A                   -> CalculateGMatrix()
+ *      d) compute P from G                             -> CalculatePMatrix()
+ *      e) update fuzzy membership μ                    -> CalculateMiuMatrix()
+ *      f) update ζ and ζ^n from current μ and P        -> compute_zeta(...) over all voxels
+ *      g) update cluster centres V                     -> CalculateCentres()
+ *      h) compute centre-change error                  -> CalculateErrorInCentres()
+ *      i) copy NewV → V and MU → PreMU if not converged
+ *--------------------------------------------------------------------------------------------------------------------------------------*/
+void fcm()
+{
+    int LoopCount = 0;
+    double Error = 100.0;
+    double PreError;
+
+    int ImageIndex, RowIndex, ColumnIndex;
+
+    printf("\nEntering into fcm()\n");
+
+    /*------------------------------------------------------
+      1) Build feature vectors from input ImageVolume
+    -------------------------------------------------------*/
+    create_feature();
+    printf("\n Leaving from  create_feature() \n");
+
+    /*------------------------------------------------------
+      2) Initialise cluster centres V_MAT (e.g. histogram based)
+    -------------------------------------------------------*/
+    Initialize_centre();
+    printf("\n Leaving from Initialize_centre()  \n");
+
+    /*------------------------------------------------------
+      3) Initialise previous memberships PreMU_MAT
+         using intensity-based heuristics and V_MAT.
+         MU_MAT will be updated inside the loop.
+    -------------------------------------------------------*/
+    Initialize_MU();
+    printf("\n Leaving from Initialize_MU() \n");
+
+    /*------------------------------------------------------
+      4) Allocate all matrices: D, D_Neigh, Mean_F,
+         A_MAT, Abar_MAT, MU_MAT, P_MAT, G_MAT,
+         ZETA_MAT, ZETA_N_MAT, NewV_MAT, etc.
+    -------------------------------------------------------*/
+    AllocateMemoryForAlgorithm();
+    printf("\n Memory allocation for algorithm completed.\n\n");
+
+    /*------------------------------------------------------
+      4a) OPTIONAL but recommended:
+          Initialise ζ and ζ^n to zero before first iteration,
+          so that the first AAbarMatrix call uses (1 + 0).
+          (Only if ZETA_MAT / ZETA_N_MAT are not already zeroed)
+          
+          without this
+          A_MAT --> huge or negative
+          MU    --> infinite or negative
+    -------------------------------------------------------*/
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                ZETA_MAT[ImageIndex][RowIndex][ColumnIndex] = 0.0;
+                ZETA_N_MAT[ImageIndex][RowIndex][ColumnIndex] = 0.0;
+            }
+
+
+    do
+    {
+        LoopCount++;
+
+        /*--------------------------------------------------
+          a) Compute squared Euclidean distance D_MAT and
+             neighbourhood distance D_Neigh_MAT and mean
+             feature vector Mean_F_MAT.
+        ---------------------------------------------------*/
+        CalculateEuclideanAndMeanDistanceBtVoxelsAndCentres();
+        printf("\nCalculation of distances completed....\n");
+
+        /*--------------------------------------------------
+          b) Compute A_MAT and Abar_MAT using:
+                 A ∝ exp(-D / (2σ²)) * (1 + ζ^n)
+             where ζ^n is from previous iteration.
+        ---------------------------------------------------*/
+        CalculateAAbarMatrix();
+        printf("\nCalculation of A and Abar matrices completed....\n");
+
+        /*--------------------------------------------------
+          c) Compute spatial weighting G_MAT from PreMU and A:
+                 G_ik ∝ μ_ik^{(prev)} * A_ik, spatially normalised
+        ---------------------------------------------------*/
+        CalculateGMatrix();
+        printf("\nCalculation of G matrix completed....\n");
+
+        /*--------------------------------------------------
+          d) Compute P_MAT (probabilities) from G_MAT:
+                 P_ik = G_ik / Σ_j G_ij
+        ---------------------------------------------------*/
+        CalculatePMatrix();
+        printf("\nCalculation of P matrix completed....\n");
+
+        /*--------------------------------------------------
+          e) Update MU_MAT from A_MAT (fuzzy membership step):
+                 μ_ik = 1 / Σ_j ( (d_ik / d_ij)^{1/(m-1)} )
+             implemented via (1 - A) as dissimilarity.
+        ---------------------------------------------------*/
+        CalculateMiuMatrix();
+        printf("\nCalculation of μ (MU_MAT) completed....\n");
+
+        /*--------------------------------------------------
+          f) Update ζ and ζ^n at every voxel using current
+             μ and P:
+                 ζ(i)  = - Σ_k [ μ_ik^m ln(μ_ik^m) + P_ik^m ln(P_ik^m) ]
+                 ζ^n(i) = (ζ(i))^n
+             This ζ^n will be used in the NEXT iteration's
+             CalculateAAbarMatrix().
+        ---------------------------------------------------*/
+        for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+        {
+            for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            {
+                for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+                {
+                    compute_zeta(ImageIndex, RowIndex, ColumnIndex, n);
+                }
+            }
+        }
+        printf("\nEntropy-based ζ and ζ^n updated....\n");
+
+        /*--------------------------------------------------
+          g) Update cluster centres NewV_MAT using the new
+             μ, P, A, Abar, Mean_F, etc. (your hybrid model).
+        ---------------------------------------------------*/
+        CalculateCentres();
+        // DisplayClusterCenters();  /* optional debug */
+
+        /*--------------------------------------------------
+          h) Compute error between old centres V_MAT and
+             new centres NewV_MAT (sum of Euclidean distances).
+        ---------------------------------------------------*/
+        PreError = Error;
+        Error = CalculateErrorInCentres();
+
+        /*--------------------------------------------------
+          i) If not converged, copy NewV → V and current μ
+             into PreMU for the next iteration.
+        ---------------------------------------------------*/
+        if (Error > ErrorThreshold)
+        {
+            CopyNewVToPreV();
+            CopyNewMiuToPreMiu();
+        }
+
+        fflush(stdout);
+        printf("\r\tPrevious Error: %7.3f, Present Error: %7.3f at Iteration Number: %2d",
+               PreError, Error, LoopCount);
+        fflush(stdout);
+
+    } while (Error > ErrorThreshold && LoopCount < Iteration_No);
+
+    printf("\n\n\tAlgorithm terminates successfully ...\n");
+}
+
 /*---------------------------------------------------------
                   MAIN
 ----------------------------------------------------------*/
+/*--------------------------------------------------------------------------------------------------------------*
+ * main()
+ *
+ * Expected command-line arguments (13 total):
+ *
+ *   argv[1]  : ImageVolumeFile     (e.g., subject04_t1w_p4.rawb)
+ *   argv[2]  : GroundTruthFile    (e.g., subject04_segmentation.rawb)
+ *   argv[3]  : ImageFileName tag  (used as prefix for output PGM files)
+ *   argv[4]  : m                  (fuzzifier for μ, e.g. 2.0)
+ *   argv[5]  : Starting_Image     (first slice index to use, 0-based)
+ *   argv[6]  : Last_Image         (last slice index to use, 0-based)
+ *   argv[7]  : ErrorThreshold     (stopping criterion on cluster-centre change)
+ *   argv[8]  : Alpha              (weight between μ-part and P-part in centre update)
+ *   argv[9]  : Window_Size        (N_SIZE, odd integer: neighbourhood size, e.g. 3, 5, 7)
+ *   argv[10] : Iteration_No       (maximum number of FCM iterations)
+ *   argv[11] : p                  (still available if you want a joint μ–P membership; may be unused)
+ *   argv[12] : q                  (same as above)
+ *   argv[13] : n                  (exponent for ζ^n in the new entropy-based term)
+ *
+ * Note: Ground truth–related functions (Read_GroundTruth, segmented_accuracy, etc.)
+ *       require a valid label volume in argv[2]. If you don’t have GT, you can
+ *       comment out those calls in main.
+ *--------------------------------------------------------------------------------------------------------------*/
 
-int main()
+int main(int argc, char *argv[])
 {
-    // -----------------------------------------------------
-    // 1. Set file name and slice range manually
-    // -----------------------------------------------------
-    sprintf(FileName, "MRI"); // Prefix for PGM files
-    Starting_Image = 0;       // Change if needed
-    Last_Image = 149;         // Change if needed
+    int ClassIndex;
+    double img;
 
-    char input_file[] = "subject04_t1w_p4.rawb"; // <--- your MRI file
-
-    printf("\n======================================\n");
-    printf("      MRI Processing Program\n");
-    printf("======================================\n");
-    printf(" Input RAWB File  : %s\n", input_file);
-    printf(" Slice Range      : %d to %d\n", Starting_Image, Last_Image);
-    printf(" Output Prefix    : %s\n", FileName);
-    printf("======================================\n\n");
-
-    // -----------------------------------------------------
-    // 2. Open RAWB MRI file
-    // -----------------------------------------------------
-    fp1 = fopen(input_file, "rb");
-    if (fp1 == NULL)
+    /*-------------------------------------------
+      1) Open input MRI volume file (raw bytes)
+    --------------------------------------------*/
+    if (argc != 13)
     {
-        printf("❌ ERROR: Cannot open file: %s\n", input_file);
-        return 1;
+        printf("\nUsage:\n");
+        printf("  %s <ImageVolumeFile> <OutputName> <m> <Starting_Image> <Last_Image> "
+               "<ErrorThreshold> <Alpha> <Window_Size> <Iteration_No> <p> <q> <n>\n",
+               argv[0]);
+        exit(1);
     }
 
-    // -----------------------------------------------------
-    // 3. Read the MRI volume (3D)
-    // -----------------------------------------------------
-    Read_IP_Image(fp1);
-    fclose(fp1);
+    fp1 = fopen(argv[1], "rb");
+    if (!fp1)
+    {
+        printf("\nCannot open input volume.\n");
+        exit(1);
+    }
 
-    // -----------------------------------------------------
-    // 4. Save each slice as PGM image
-    // -----------------------------------------------------
-    create_img();
+    sprintf(FileName, "%s", argv[2]);
 
-    // -----------------------------------------------------
-    // 5. Generate intensity histogram
-    // -----------------------------------------------------
-    create_histogram();
+    m = atof(argv[3]);
+    Starting_Image = atoi(argv[4]);
+    Last_Image = atoi(argv[5]);
+    ErrorThreshold = atof(argv[6]);
+    Alpha = atof(argv[7]);
+    N_SIZE = atoi(argv[8]);
+    Iteration_No = atoi(argv[9]);
+    p = atof(argv[10]);
+    q = atof(argv[11]);
+    n = atof(argv[12]);
 
-    printf("\n🎉 Program Completed Successfully!\n");
+    /*-------------------------------------------
+      2) Open Ground Truth file (if available)
+         NOTE: Required for segmented_accuracy()
+    --------------------------------------------*/
+    // fp_gt = fopen(argv[2], "rb");
+    // if (fp_gt == NULL) {
+    //     printf("\n Unable to open ground truth file: %s\n", argv[2]);
+    //     exit(1);
+    // }
+
+    /*-------------------------------------------
+      4) Read MRI volume and create slice PGMs
+    --------------------------------------------*/
+    Read_IP_Image(fp1); /* fills ImageVolume[ImageIndex][Row][Col] */
+    create_img();       /* writes J<FileName>_XXX.pgm; just for visualization */
+
+    /*-------------------------------------------
+      5) Compute global intensity variance (σ^2)
+         used in Gaussian distance weights in A/Abar
+    --------------------------------------------*/
+    calculate_sigma();
+
+    /*-------------------------------------------
+      6) Run the fuzzy clustering with new model
+         (includes ζ / ζ^n via compute_zeta)
+    --------------------------------------------*/
+    fcm();
+
+    /* Optional: joint μ–P membership refinement */
+    // CalculateJointMiuMatrix();
+
+    /*-------------------------------------------
+      7) Hard segmentation: assign each voxel
+         to the class with maximum μ
+    --------------------------------------------*/
+    write_image_array();
+
+    /*-------------------------------------------
+      8) Overwrite ImageVolume with averaged
+         feature value (if you want to output
+         re-smoothed images or debug)
+    --------------------------------------------*/
+    overwrite_input_image();
+
+    /*-------------------------------------------
+      9) Read ground truth labels and compute
+         segmentation metrics (Dice, TSA, SA)
+    --------------------------------------------*/
+    // Read_GroundTruth();
+    // segmented_accuracy();
+
+    /*-------------------------------------------
+      10) Create binary CSF / GM / WM masks
+          as PGM images
+    --------------------------------------------*/
+    create_clusterfilescsf();
+    create_clusterfilesgm();
+    create_clusterfileswm();
+
+    /*-------------------------------------------
+      11) Cluster validity indices:
+          - Vpc: partition coefficient
+          - Vpe: partition entropy
+    --------------------------------------------*/
+    calculate_vpc();
+    calculate_vpe();
+
     return 0;
 }
