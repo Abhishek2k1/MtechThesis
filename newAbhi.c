@@ -3,6 +3,27 @@
 #include <stdlib.h>
 #include <float.h>
 #include <string.h>
+// Subject 04 Simulated T1 image
+// MINC volume info:
+
+// image: signed__ short 0 to 4095
+// image dimensions: zspace yspace xspace
+//     dimension name         length         step        start
+//     --------------         ------         ----        -----
+//     zspace                    181            1       -72.25
+//     yspace                    256            1      -145.75
+//     xspace                    256            1      -127.75
+
+// Subject 04 Discrete model
+// MINC volume info:
+
+// image: unsigned byte 0 to 255
+// image dimensions: zspace yspace xspace
+//     dimension name         length         step        start
+//     --------------         ------         ----        -----
+//     zspace                    362          0.5       -72.25
+//     yspace                    434          0.5      -126.25
+//     xspace                    362          0.5       -90.25
 
 //  Update correct MRI volume dimensions
 #define Total_Image 181 // Total number of slices in your file
@@ -1863,6 +1884,130 @@ void CalculateCentres()
     }
 }
 
+void Read_GroundTruth()
+{
+    unsigned char byte;
+    int VoxelValue;
+    int RowIndex, ColumnIndex;
+    int ImageIndex, ImageIndex1, ImageIndex2;
+    char File[100];
+    FILE *fp_gt_pgm;
+
+    /* TN is already set in Read_IP_Image / main:
+       TN = (Last_Image - Starting_Image + 1); */
+
+    // Allocate memory for 3D GroundTruth volume [TN][ROW][COL]
+    GroundTruth = (int ***)malloc(TN * sizeof(int **));
+    if (GroundTruth == NULL)
+    {
+        printf("Can't allocate memory for GroundTruth volume\n");
+        exit(1);
+    }
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        GroundTruth[ImageIndex] = (int **)malloc(ROW * sizeof(int *));
+        if (GroundTruth[ImageIndex] == NULL)
+        {
+            printf("Can't allocate memory for GroundTruth[%d]\n", ImageIndex);
+            exit(1);
+        }
+
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            GroundTruth[ImageIndex][RowIndex] = (int *)malloc(COL * sizeof(int));
+            if (GroundTruth[ImageIndex][RowIndex] == NULL)
+            {
+                printf("Can't allocate memory for GroundTruth[%d][%d]\n", ImageIndex, RowIndex);
+                exit(1);
+            }
+        }
+    }
+
+    printf("\nGT voxel size: %zu bytes\n", sizeof(byte));
+
+    /*-------------------------------------------------
+      1) Skip GT slices before Starting_Image
+         (exactly like Read_IP_Image)
+    --------------------------------------------------*/
+    for (ImageIndex1 = 0; ImageIndex1 < Starting_Image; ImageIndex1++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                if (fread(&byte, sizeof(byte), 1, fp_gt) != 1)
+                {
+                    printf("\nError skipping GT slice before Starting_Image.\n");
+                    exit(1);
+                }
+            }
+        }
+    }
+
+    /*-------------------------------------------------
+      2) Read only the slices [Starting_Image .. Last_Image]
+         into GroundTruth[0..TN-1]
+    --------------------------------------------------*/
+    ImageIndex = 0;
+    for (ImageIndex2 = Starting_Image; ImageIndex2 <= Last_Image; ImageIndex2++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                if (fread(&byte, sizeof(byte), 1, fp_gt) == 1)
+                {
+                    VoxelValue = (int)byte; // labels 0..255 in crisp volume
+                    GroundTruth[ImageIndex][RowIndex][ColumnIndex] = VoxelValue;
+                }
+                else
+                {
+                    printf("\nError reading GT slice to form volume.\n");
+                    exit(1);
+                }
+            }
+        }
+        ImageIndex++;
+    }
+
+    printf("\nGT ImageIndex (slices read) = %d\n", ImageIndex);
+
+    /*-------------------------------------------------
+      3) (Optional) Write GT as PGM slices for checking
+         FileName is the tag you already use for IP PGMs
+    --------------------------------------------------*/
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    {
+        sprintf(File, "GT%s_%03d.pgm", FileName, ImageIndex);
+
+        fp_gt_pgm = fopen(File, "w");
+        if (fp_gt_pgm == NULL)
+        {
+            printf("\nCan't open GT PGM file %s\n", File);
+            exit(1);
+        }
+
+        // PGM header
+        fprintf(fp_gt_pgm, "P2\n");
+        fprintf(fp_gt_pgm, "# Ground Truth slice %d\n", ImageIndex);
+        fprintf(fp_gt_pgm, "%d %d\n", COL, ROW);
+        fprintf(fp_gt_pgm, "255\n");
+
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        {
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            {
+                fprintf(fp_gt_pgm, "%d ",
+                        GroundTruth[ImageIndex][RowIndex][ColumnIndex]);
+            }
+            fprintf(fp_gt_pgm, "\n");
+        }
+
+        fclose(fp_gt_pgm);
+    }
+}
+
 /*-------------------------------------------------------------------------------------------------------------------------------
   Function: DisplayClusterCenters()
 
@@ -2666,7 +2811,7 @@ void fcm()
           Initialise ζ and ζ^n to zero before first iteration,
           so that the first AAbarMatrix call uses (1 + 0).
           (Only if ZETA_MAT / ZETA_N_MAT are not already zeroed)
-          
+
           without this
           A_MAT --> huge or negative
           MU    --> infinite or negative
@@ -2679,7 +2824,6 @@ void fcm()
                 ZETA_MAT[ImageIndex][RowIndex][ColumnIndex] = 0.0;
                 ZETA_N_MAT[ImageIndex][RowIndex][ColumnIndex] = 0.0;
             }
-
 
     do
     {
@@ -2812,10 +2956,10 @@ int main(int argc, char *argv[])
     /*-------------------------------------------
       1) Open input MRI volume file (raw bytes)
     --------------------------------------------*/
-    if (argc != 13)
+    if (argc != 14)
     {
         printf("\nUsage:\n");
-        printf("  %s <ImageVolumeFile> <OutputName> <m> <Starting_Image> <Last_Image> "
+        printf("  %s <ImageVolumeFile> <GrundTruthFile> <OutputName> <m> <Starting_Image> <Last_Image> "
                "<ErrorThreshold> <Alpha> <Window_Size> <Iteration_No> <p> <q> <n>\n",
                argv[0]);
         exit(1);
@@ -2827,29 +2971,29 @@ int main(int argc, char *argv[])
         printf("\nCannot open input volume.\n");
         exit(1);
     }
-
-    sprintf(FileName, "%s", argv[2]);
-
-    m = atof(argv[3]);
-    Starting_Image = atoi(argv[4]);
-    Last_Image = atoi(argv[5]);
-    ErrorThreshold = atof(argv[6]);
-    Alpha = atof(argv[7]);
-    N_SIZE = atoi(argv[8]);
-    Iteration_No = atoi(argv[9]);
-    p = atof(argv[10]);
-    q = atof(argv[11]);
-    n = atof(argv[12]);
-
     /*-------------------------------------------
-      2) Open Ground Truth file (if available)
-         NOTE: Required for segmented_accuracy()
-    --------------------------------------------*/
-    // fp_gt = fopen(argv[2], "rb");
-    // if (fp_gt == NULL) {
-    //     printf("\n Unable to open ground truth file: %s\n", argv[2]);
-    //     exit(1);
-    // }
+          2) Open Ground Truth file (if available)
+             NOTE: Required for segmented_accuracy()
+        --------------------------------------------*/
+    fp_gt = fopen(argv[2], "rb");
+    if (fp_gt == NULL)
+    {
+        printf("\n Unable to open file: %s\n", argv[2]);
+        exit(1);
+    }
+
+    sprintf(FileName, "%s", argv[3]);
+
+    m = atof(argv[4]);
+    Starting_Image = atoi(argv[5]);
+    Last_Image = atoi(argv[6]);
+    ErrorThreshold = atof(argv[7]);
+    Alpha = atof(argv[8]);
+    N_SIZE = atoi(argv[9]);
+    Iteration_No = atoi(argv[10]);
+    p = atof(argv[11]);
+    q = atof(argv[12]);
+    n = atof(argv[13]);
 
     /*-------------------------------------------
       4) Read MRI volume and create slice PGMs
@@ -2868,6 +3012,8 @@ int main(int argc, char *argv[])
          (includes ζ / ζ^n via compute_zeta)
     --------------------------------------------*/
     fcm();
+
+    DisplayClusterCenters();
 
     /* Optional: joint μ–P membership refinement */
     // CalculateJointMiuMatrix();
@@ -2889,8 +3035,8 @@ int main(int argc, char *argv[])
       9) Read ground truth labels and compute
          segmentation metrics (Dice, TSA, SA)
     --------------------------------------------*/
-    // Read_GroundTruth();
-    // segmented_accuracy();
+    Read_GroundTruth();
+    segmented_accuracy();
 
     /*-------------------------------------------
       10) Create binary CSF / GM / WM masks
