@@ -3115,3 +3115,45 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
+
+Algorithm terminates successfully ...
+
+------------------ Updated Cluster Centers (Entropy-Driven Model) ------------------
+
+Class 0 Centers:  V[0][0] = 6.074  V[0][1] = 6.647  V[0][2] = 6.647  V[0][3] = 6.613  V[0][4] = 6.556  V[0][5] = 6.318  V[0][6] = 6.359  V[0][7] = 6.121
+Class 1 Centers:  V[1][0] = 69.468  V[1][1] = 71.120  V[1][2] = 71.102  V[1][3] = 70.850  V[1][4] = 70.716  V[1][5] = 69.896  V[1][6] = 70.072  V[1][7] = 70.343        
+Class 2 Centers:  V[2][0] = 115.699  V[2][1] = 115.258  V[2][2] = 115.234  V[2][3] = 115.393  V[2][4] = 115.443  V[2][5] = 115.548  V[2][6] = 115.582  V[2][7] = 115.701
+Class 3 Centers:  V[3][0] = 144.195  V[3][1] = 140.775  V[3][2] = 140.842  V[3][3] = 141.266  V[3][4] = 141.404  V[3][5] = 142.518  V[3][6] = 142.620  V[3][7] = 143.179
+------------------------------------------------------------------------------------
+
+
+Γ£ö Final segmentation class map generated successfully.
+
+Γ£ö ImageVolume successfully overwritten using averaged feature values.
+
+GT voxel size (file): 1 bytes
+Reading high-res GT volume: 362 x 434 x 362 = 56873096 voxels
+Resampling GT to T1 grid (TN=51, ROW=256, COL=256)...
+
+GT resampling completed.
+
+================ Segmentation Accuracy Report ================
+
+Class 0 ΓåÆ Dice: 0.9717   |   Accuracy: 0.9999
+Class 1 ΓåÆ Dice: 0.5031   |   Accuracy: 0.9590
+Class 2 ΓåÆ Dice: 0.8279   |   Accuracy: 0.9462
+Class 3 ΓåÆ Dice: 0.7898   |   Accuracy: 0.7002
+--------------------------------------------------------------
+Overall Dice Similarity Index = 77.31%
+==============================================================
+CSF slice 51 written successfully.
+GM slice written successfully.
+WM slice written successfully.
+
+        Fuzzy Partition Coefficient (Vpc) = 0.937672
+
+        Partition Entropy (Vpe) = 0.087140
+
+PS C:\Users\jksing\Desktop\Abhishek gi\MtechThesis> 
+
