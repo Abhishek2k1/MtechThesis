@@ -25,6 +25,31 @@
 //     yspace                    434          0.5      -126.25
 //     xspace                    362          0.5       -90.25
 
+/* T1 (simulated) geometry */
+#define T1_Z_LEN   181
+#define T1_Y_LEN   256
+#define T1_X_LEN   256
+
+const double T1_Z_START = -72.25;
+const double T1_Y_START = -145.75;
+const double T1_X_START = -127.75;
+const double T1_Z_STEP  = 1.0;
+const double T1_Y_STEP  = 1.0;
+const double T1_X_STEP  = 1.0;
+
+/* Discrete model (GT) geometry */
+#define GT_Z_LEN   362
+#define GT_Y_LEN   434
+#define GT_X_LEN   362
+
+const double GT_Z_START = -72.25;
+const double GT_Y_START = -126.25;
+const double GT_X_START = -90.25;
+const double GT_Z_STEP  = 0.5;
+const double GT_Y_STEP  = 0.5;
+const double GT_X_STEP  = 0.5;
+
+
 //  Update correct MRI volume dimensions
 #define Total_Image 181 // Total number of slices in your file
 #define CLASS 4
@@ -1884,19 +1909,16 @@ void CalculateCentres()
     }
 }
 
-void Read_GroundTruth()
-{
+
+void Read_GroundTruth(){
     unsigned char byte;
-    int VoxelValue;
     int RowIndex, ColumnIndex;
-    int ImageIndex, ImageIndex1, ImageIndex2;
+    int ImageIndex;
     char File[100];
     FILE *fp_gt_pgm;
 
-    /* TN is already set in Read_IP_Image / main:
-       TN = (Last_Image - Starting_Image + 1); */
-
-    // Allocate memory for 3D GroundTruth volume [TN][ROW][COL]
+    /* 1) Allocate memory for 3D GroundTruth volume [TN][ROW][COL]
+          (TN = Last_Image - Starting_Image + 1, ROW=256, COL=256) */
     GroundTruth = (int ***)malloc(TN * sizeof(int **));
     if (GroundTruth == NULL)
     {
@@ -1924,62 +1946,98 @@ void Read_GroundTruth()
         }
     }
 
-    printf("\nGT voxel size: %zu bytes\n", sizeof(byte));
+    printf("\nGT voxel size (file): %zu bytes\n", sizeof(byte));
 
-    /*-------------------------------------------------
-      1) Skip GT slices before Starting_Image
-         (exactly like Read_IP_Image)
-    --------------------------------------------------*/
-    for (ImageIndex1 = 0; ImageIndex1 < Starting_Image; ImageIndex1++)
+    /* 2) Read full high-resolution GT volume: 362 x 434 x 362 (z,y,x) */
+
+    size_t gt_voxels = (size_t)GT_Z_LEN * GT_Y_LEN * GT_X_LEN;
+    unsigned char *gt_raw = (unsigned char *)malloc(gt_voxels * sizeof(unsigned char));
+    if (gt_raw == NULL)
     {
-        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+        printf("Can't allocate temporary buffer for GT raw volume\n");
+        exit(1);
+    }
+
+    printf("Reading high-res GT volume: %d x %d x %d = %zu voxels\n",
+           GT_Z_LEN, GT_Y_LEN, GT_X_LEN, gt_voxels);
+
+    for (int iz = 0; iz < GT_Z_LEN; iz++)
+    {
+        for (int iy = 0; iy < GT_Y_LEN; iy++)
         {
-            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            for (int ix = 0; ix < GT_X_LEN; ix++)
             {
+                size_t idx = ((size_t)iz * GT_Y_LEN * GT_X_LEN) +
+                             ((size_t)iy * GT_X_LEN) +
+                             (size_t)ix;
+
                 if (fread(&byte, sizeof(byte), 1, fp_gt) != 1)
                 {
-                    printf("\nError skipping GT slice before Starting_Image.\n");
+                    printf("\nError reading GT raw volume at (z=%d,y=%d,x=%d)\n",
+                           iz, iy, ix);
+                    free(gt_raw);
                     exit(1);
                 }
+                gt_raw[idx] = byte;
             }
         }
     }
 
-    /*-------------------------------------------------
-      2) Read only the slices [Starting_Image .. Last_Image]
-         into GroundTruth[0..TN-1]
-    --------------------------------------------------*/
-    ImageIndex = 0;
-    for (ImageIndex2 = Starting_Image; ImageIndex2 <= Last_Image; ImageIndex2++)
+    /* 3) Resample GT to T1 grid (TN x ROW x COL) using nearest neighbour */
+
+    printf("Resampling GT to T1 grid (TN=%d, ROW=%d, COL=%d)...\n",
+           TN, ROW, COL);
+
+    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
     {
+        /* T1 z index in full volume */
+        int iz_t1 = Starting_Image + ImageIndex;
+
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
         {
             for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
             {
-                if (fread(&byte, sizeof(byte), 1, fp_gt) == 1)
+                /* --- World coordinate in T1 space --- */
+                double z_world = T1_Z_START + iz_t1      * T1_Z_STEP;
+                double y_world = T1_Y_START + RowIndex   * T1_Y_STEP;
+                double x_world = T1_X_START + ColumnIndex* T1_X_STEP;
+
+                /* --- Map to GT index space (double) --- */
+                double gz = (z_world - GT_Z_START) / GT_Z_STEP;
+                double gy = (y_world - GT_Y_START) / GT_Y_STEP;
+                double gx = (x_world - GT_X_START) / GT_X_STEP;
+
+                /* --- Nearest neighbour indices in GT grid --- */
+                int iz_gt = (int)floor(gz + 0.5);
+                int iy_gt = (int)floor(gy + 0.5);
+                int ix_gt = (int)floor(gx + 0.5);
+
+                int label = 0;  /* default background if outside FOV */
+
+                if (iz_gt >= 0 && iz_gt < GT_Z_LEN &&
+                    iy_gt >= 0 && iy_gt < GT_Y_LEN &&
+                    ix_gt >= 0 && ix_gt < GT_X_LEN)
                 {
-                    VoxelValue = (int)byte; // labels 0..255 in crisp volume
-                    GroundTruth[ImageIndex][RowIndex][ColumnIndex] = VoxelValue;
+                    size_t idx_gt = ((size_t)iz_gt * GT_Y_LEN * GT_X_LEN) +
+                                    ((size_t)iy_gt * GT_X_LEN) +
+                                    (size_t)ix_gt;
+                    label = (int)gt_raw[idx_gt];
                 }
-                else
-                {
-                    printf("\nError reading GT slice to form volume.\n");
-                    exit(1);
-                }
+
+                GroundTruth[ImageIndex][RowIndex][ColumnIndex] = label;
             }
         }
-        ImageIndex++;
     }
 
-    printf("\nGT ImageIndex (slices read) = %d\n", ImageIndex);
+    free(gt_raw);
 
-    /*-------------------------------------------------
-      3) (Optional) Write GT as PGM slices for checking
-         FileName is the tag you already use for IP PGMs
-    --------------------------------------------------*/
+    printf("\nGT resampling completed.\n");
+
+    /* 4) Optional: write resampled GT slices as PGM for checking */
+
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
     {
-        sprintf(File, "GT%s_%03d.pgm", FileName, ImageIndex);
+        sprintf(File, "GT_resampled_%s_%03d.pgm", FileName, ImageIndex);
 
         fp_gt_pgm = fopen(File, "w");
         if (fp_gt_pgm == NULL)
@@ -1988,9 +2046,8 @@ void Read_GroundTruth()
             exit(1);
         }
 
-        // PGM header
         fprintf(fp_gt_pgm, "P2\n");
-        fprintf(fp_gt_pgm, "# Ground Truth slice %d\n", ImageIndex);
+        fprintf(fp_gt_pgm, "# Resampled Ground Truth slice %d\n", ImageIndex);
         fprintf(fp_gt_pgm, "%d %d\n", COL, ROW);
         fprintf(fp_gt_pgm, "255\n");
 
@@ -2467,7 +2524,7 @@ int create_clusterfilescsf()
         /* Build output filename for this slice */
         sprintf(File, "%s_CSF_%03d.pgm", FileName, ImageIndex);
 
-        printf("\nCSF mask file: %s\n", File);
+        // printf("\nCSF mask file: %s\n", File);
 
         /* Open output PGM file */
         fp_csflst = fopen(File, "w");
@@ -2500,8 +2557,9 @@ int create_clusterfilescsf()
         }
 
         fclose(fp_csflst);
-        printf("CSF slice %d written successfully.\n", ImageIndex);
+        
     }
+    printf("CSF slice %d written successfully.\n", ImageIndex);
 
     return 0;
 }
@@ -2534,7 +2592,7 @@ int create_clusterfilesgm()
         /* Build output filename for this slice */
         sprintf(File, "%s_GM_%03d.pgm", FileName, ImageIndex);
 
-        printf("\nGM mask file: %s\n", File);
+        // printf("\nGM mask file: %s\n", File);
 
         /* Open output PGM file for this slice */
         fp_gmlst = fopen(File, "w");
@@ -2567,9 +2625,9 @@ int create_clusterfilesgm()
         }
 
         fclose(fp_gmlst);
-        printf("GM slice %d written successfully.\n", ImageIndex);
+        
     }
-
+printf("GM slice written successfully.\n", ImageIndex);
     return 0;
 }
 
@@ -2602,7 +2660,7 @@ int create_clusterfileswm()
         /* Build output filename for this slice */
         sprintf(File, "%s_WM_%03d.pgm", FileName, ImageIndex);
 
-        printf("\nWM mask file: %s\n", File);
+        // printf("\nWM mask file: %s\n", File);
 
         /* Open output PGM file for this slice */
         fp_wmlst = fopen(File, "w");
@@ -2635,8 +2693,9 @@ int create_clusterfileswm()
         }
 
         fclose(fp_wmlst);
-        printf("WM slice %d written successfully.\n", ImageIndex);
+        
     }
+    printf("WM slice written successfully.\n", ImageIndex);
 
     return 0;
 }
