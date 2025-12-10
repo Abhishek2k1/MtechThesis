@@ -14,43 +14,42 @@
 //     yspace                    256            1      -145.75
 //     xspace                    256            1      -127.75
 
+
 // Subject 04 Discrete model
 // MINC volume info:
-
 // image: unsigned byte 0 to 255
-// image dimensions: zspace yspace xspace
+// image dimensions: zspace yspace xspa
 //     dimension name         length         step        start
 //     --------------         ------         ----        -----
 //     zspace                    362          0.5       -72.25
 //     yspace                    434          0.5      -126.25
 //     xspace                    362          0.5       -90.25
+//  Update correct MRI volume dimensions
 
-/* T1 (simulated) geometry */
-#define T1_Z_LEN   181
-#define T1_Y_LEN   256
-#define T1_X_LEN   256
+/* T1 geometry */
+#define T1_Z_LEN 181
+#define T1_Y_LEN 256
+#define T1_X_LEN 256
 
 const double T1_Z_START = -72.25;
 const double T1_Y_START = -145.75;
 const double T1_X_START = -127.75;
-const double T1_Z_STEP  = 1.0;
-const double T1_Y_STEP  = 1.0;
-const double T1_X_STEP  = 1.0;
+const double T1_Z_STEP = 1.0;
+const double T1_Y_STEP = 1.0;
+const double T1_X_STEP = 1.0;
 
-/* Discrete model (GT) geometry */
-#define GT_Z_LEN   362
-#define GT_Y_LEN   434
-#define GT_X_LEN   362
+/* Discrete GT geometry */
+#define GT_Z_LEN 362
+#define GT_Y_LEN 434
+#define GT_X_LEN 362
 
 const double GT_Z_START = -72.25;
 const double GT_Y_START = -126.25;
 const double GT_X_START = -90.25;
-const double GT_Z_STEP  = 0.5;
-const double GT_Y_STEP  = 0.5;
-const double GT_X_STEP  = 0.5;
+const double GT_Z_STEP = 0.5;
+const double GT_Y_STEP = 0.5;
+const double GT_X_STEP = 0.5;
 
-
-//  Update correct MRI volume dimensions
 #define Total_Image 181 // Total number of slices in your file
 #define CLASS 4
 #define ROW 256 // Correct image height
@@ -90,18 +89,16 @@ double ZETA_EXP_N = 1.0; /* exponent 'n' used when computing ζ^n (set from main
 ..............................................................................*/
 void Read_IP_Image(FILE *fp)
 {
-    int VoxelValue, i;
-
     unsigned char byte;
-
     int RowIndex, ColumnIndex;
-    int ImageIndex1, ImageIndex2, ImageIndex3, ImageIndex;
+    int ImageIndex1, ImageIndex2, ImageIndex;
 
-    TN = ((Last_Image - Starting_Image) + 1);
+    TN = (Last_Image - Starting_Image + 1);
     printf("\nTotal number of images under consideration = %d\n", TN);
 
-    // Allocate memory for 3D image volume
-    if ((ImageVolume = (double ***)malloc(TN * sizeof(double **))) == NULL)
+    // Allocate memory for [TN][ROW][COL]
+    ImageVolume = (double ***)malloc(TN * sizeof(double **));
+    if (!ImageVolume)
     {
         printf("Can't allocate memory for image volume\n");
         exit(1);
@@ -110,27 +107,34 @@ void Read_IP_Image(FILE *fp)
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
     {
         ImageVolume[ImageIndex] = (double **)malloc(ROW * sizeof(double *));
+        if (!ImageVolume[ImageIndex])
+        {
+            printf("Can't allocate memory for image volume\n");
+            exit(1);
+        }
+
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
         {
             ImageVolume[ImageIndex][RowIndex] = (double *)malloc(COL * sizeof(double));
-        }
-    }
-
-    printf("Voxel size: %zu bytes\n", sizeof(byte)); //
-
-    //  Skip unused slices before Starting_Image
-    for (ImageIndex1 = 0; ImageIndex1 < Starting_Image; ImageIndex1++)
-    {
-        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
-        {
-            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+            if (!ImageVolume[ImageIndex][RowIndex])
             {
-                fread(&byte, sizeof(byte), 1, fp);
+                printf("Can't allocate memory for image volume\n");
+                exit(1);
             }
         }
     }
 
-    //  Read only required slices (starting to last)
+    printf("Voxel size: %zu bytes (unsigned char)\n", sizeof(byte));
+
+    // Skip slices before Starting_Image
+    for (ImageIndex1 = 0; ImageIndex1 < Starting_Image; ImageIndex1++)
+    {
+        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+                fread(&byte, sizeof(byte), 1, fp);
+    }
+
+    // Read required slices
     ImageIndex = 0;
     for (ImageIndex2 = Starting_Image; ImageIndex2 <= Last_Image; ImageIndex2++)
     {
@@ -138,15 +142,12 @@ void Read_IP_Image(FILE *fp)
         {
             for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
             {
-                if (fread(&byte, sizeof(byte), 1, fp) == 1)
-                {
-                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = (double)byte;
-                }
-                else
+                if (fread(&byte, sizeof(byte), 1, fp) != 1)
                 {
                     printf("Error reading image slice.\n");
                     exit(1);
                 }
+                ImageVolume[ImageIndex][RowIndex][ColumnIndex] = (double)byte;
             }
         }
         ImageIndex++;
@@ -255,10 +256,10 @@ void Initialize_centre()
     // Each row corresponds to one cluster’s feature vector
     for (FspaceIndex = 0; FspaceIndex < F_SPACE; FspaceIndex++)
     {
-        V_MAT[0][FspaceIndex] = 4.0;   // Background / Air
-        V_MAT[1][FspaceIndex] = 76.0;  // CSF
-        V_MAT[2][FspaceIndex] = 116.0; // Gray Matter
-        V_MAT[3][FspaceIndex] = 144.0; // White Matter
+        V_MAT[0][FspaceIndex] = 6.0;//4.0;   // Background / Air
+        V_MAT[1][FspaceIndex] = 72.0;//76.0;  // CSF
+        V_MAT[2][FspaceIndex] = 116.0;//116.0; // Gray Matter
+        V_MAT[3][FspaceIndex] = 143.0;//144.0; // White Matter
     }
 }
 
@@ -1909,16 +1910,17 @@ void CalculateCentres()
     }
 }
 
-
-void Read_GroundTruth(){
+void Read_GroundTruth()
+{
     unsigned char byte;
     int RowIndex, ColumnIndex;
     int ImageIndex;
     char File[100];
     FILE *fp_gt_pgm;
 
-    /* 1) Allocate memory for 3D GroundTruth volume [TN][ROW][COL]
-          (TN = Last_Image - Starting_Image + 1, ROW=256, COL=256) */
+    /* TN, ROW, COL are for T1 grid (e.g., TN=181, ROW=256, COL=256) */
+
+    /* 1) Allocate memory for resampled GroundTruth [TN][ROW][COL] */
     GroundTruth = (int ***)malloc(TN * sizeof(int **));
     if (GroundTruth == NULL)
     {
@@ -1946,9 +1948,9 @@ void Read_GroundTruth(){
         }
     }
 
-    printf("\nGT voxel size (file): %zu bytes\n", sizeof(byte));
+    printf("\nGT voxel size (file): %d bytes (unsigned byte)\n", sizeof(byte));
 
-    /* 2) Read full high-resolution GT volume: 362 x 434 x 362 (z,y,x) */
+    /* 2) Read full high-res GT volume: 362 x 434 x 362 (z,y,x) */
 
     size_t gt_voxels = (size_t)GT_Z_LEN * GT_Y_LEN * GT_X_LEN;
     unsigned char *gt_raw = (unsigned char *)malloc(gt_voxels * sizeof(unsigned char));
@@ -1978,41 +1980,40 @@ void Read_GroundTruth(){
                     free(gt_raw);
                     exit(1);
                 }
+
                 gt_raw[idx] = byte;
             }
         }
     }
 
-    /* 3) Resample GT to T1 grid (TN x ROW x COL) using nearest neighbour */
+    /* 3) Resample GT to T1 grid using nearest neighbour */
 
     printf("Resampling GT to T1 grid (TN=%d, ROW=%d, COL=%d)...\n",
            TN, ROW, COL);
 
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
     {
-        /* T1 z index in full volume */
-        int iz_t1 = Starting_Image + ImageIndex;
+        int iz_t1 = Starting_Image + ImageIndex; /* T1 z index in full volume */
 
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
         {
             for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
             {
-                /* --- World coordinate in T1 space --- */
-                double z_world = T1_Z_START + iz_t1      * T1_Z_STEP;
-                double y_world = T1_Y_START + RowIndex   * T1_Y_STEP;
-                double x_world = T1_X_START + ColumnIndex* T1_X_STEP;
+                /* World coord in T1 space */
+                double z_world = T1_Z_START + iz_t1 * T1_Z_STEP;
+                double y_world = T1_Y_START + RowIndex * T1_Y_STEP;
+                double x_world = T1_X_START + ColumnIndex * T1_X_STEP;
 
-                /* --- Map to GT index space (double) --- */
+                /* Map to GT index space (double) */
                 double gz = (z_world - GT_Z_START) / GT_Z_STEP;
                 double gy = (y_world - GT_Y_START) / GT_Y_STEP;
                 double gx = (x_world - GT_X_START) / GT_X_STEP;
 
-                /* --- Nearest neighbour indices in GT grid --- */
                 int iz_gt = (int)floor(gz + 0.5);
                 int iy_gt = (int)floor(gy + 0.5);
                 int ix_gt = (int)floor(gx + 0.5);
 
-                int label = 0;  /* default background if outside FOV */
+                int label = 0; /* default background if outside GT FOV */
 
                 if (iz_gt >= 0 && iz_gt < GT_Z_LEN &&
                     iy_gt >= 0 && iy_gt < GT_Y_LEN &&
@@ -2035,34 +2036,34 @@ void Read_GroundTruth(){
 
     /* 4) Optional: write resampled GT slices as PGM for checking */
 
-    for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
-    {
-        sprintf(File, "GT_resampled_%s_%03d.pgm", FileName, ImageIndex);
+    // for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
+    // {
+    //     sprintf(File, "GT_resampled_%s_%03d.pgm", FileName, ImageIndex);
 
-        fp_gt_pgm = fopen(File, "w");
-        if (fp_gt_pgm == NULL)
-        {
-            printf("\nCan't open GT PGM file %s\n", File);
-            exit(1);
-        }
+    //     fp_gt_pgm = fopen(File, "w");
+    //     if (fp_gt_pgm == NULL)
+    //     {
+    //         printf("\nCan't open GT PGM file %s\n", File);
+    //         exit(1);
+    //     }
 
-        fprintf(fp_gt_pgm, "P2\n");
-        fprintf(fp_gt_pgm, "# Resampled Ground Truth slice %d\n", ImageIndex);
-        fprintf(fp_gt_pgm, "%d %d\n", COL, ROW);
-        fprintf(fp_gt_pgm, "255\n");
+    //     fprintf(fp_gt_pgm, "P2\n");
+    //     fprintf(fp_gt_pgm, "# Resampled Ground Truth slice %d\n", ImageIndex);
+    //     fprintf(fp_gt_pgm, "%d %d\n", COL, ROW);
+    //     fprintf(fp_gt_pgm, "255\n");
 
-        for (RowIndex = 0; RowIndex < ROW; RowIndex++)
-        {
-            for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
-            {
-                fprintf(fp_gt_pgm, "%d ",
-                        GroundTruth[ImageIndex][RowIndex][ColumnIndex]);
-            }
-            fprintf(fp_gt_pgm, "\n");
-        }
+    //     for (RowIndex = 0; RowIndex < ROW; RowIndex++)
+    //     {
+    //         for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
+    //         {
+    //             fprintf(fp_gt_pgm, "%d ",
+    //                     GroundTruth[ImageIndex][RowIndex][ColumnIndex]);
+    //         }
+    //         fprintf(fp_gt_pgm, "\n");
+    //     }
 
-        fclose(fp_gt_pgm);
-    }
+    //     fclose(fp_gt_pgm);
+    // }
 }
 
 /*-------------------------------------------------------------------------------------------------------------------------------
@@ -2088,16 +2089,21 @@ void DisplayClusterCenters()
 
     for (int ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
     {
+        double sum = 0.0;
+
         printf("\nClass %d Centers:", ClassIndex);
 
         for (int FspaceIndex = 0; FspaceIndex < F_SPACE; FspaceIndex++)
         {
-            printf("  V[%d][%d] = %.3f",
-                   ClassIndex, FspaceIndex, NewV_MAT[ClassIndex][FspaceIndex]);
-        }
-    }
+            double val = NewV_MAT[ClassIndex][FspaceIndex];
+            sum += val;
 
-    printf("\n------------------------------------------------------------------------------------\n\n");
+            printf("  %.3f", val);
+        }
+
+        double avg = sum / F_SPACE;
+        printf("   --> Avg = %.3f", avg);
+    }
 }
 
 /*-------------------------------------------------------------------------------------------------------------------------------
@@ -2385,54 +2391,49 @@ void overwrite_input_image()
     printf("\n✔ ImageVolume successfully overwritten using averaged feature values.\n");
 }
 
-/*-------------------------------------------------------------------------------------------------------------------------------
-    Function: segmented_accuracy()
+/*---------------------------------------------------------------
+   Function: segmented_accuracy()
+   Purpose : Compute Dice coefficient and per-class accuracy
+             between segmentation result and resampled ground truth.
 
-    Purpose:
-        - Evaluates segmentation quality by comparing:
-              (A) Predicted segmentation  → img_cluster[][][]
-              (B) Ground truth labels     → GroundTruth[][][]
-        - Computes:
-              • Dice Similarity Index (global)
-              • Per-class segmentation accuracy (SA)
-              • Tissue-specific Dice score (CSF, GM, WM)
-
-    Formula used:
-        Dice(Class k) = 2 * |Predicted ∩ GroundTruth| / (|Predicted| + |GroundTruth|)
-        SA(Class k)   = |Predicted ∩ GroundTruth| / |GroundTruth|
-
-    Notes:
-        - CLASS = 4 → { Background, CSF, GM, WM }
-        - Requires GroundTruth to be loaded before calling.
-        - Should be skipped if no GT is available.
-
-    Output:
-        Prints accuracy statistics to terminal.
-
--------------------------------------------------------------------------------------------------------------------------------*/
+   Classes (fixed for Brain tissues):
+        0 → Background
+        1 → CSF
+        2 → GM
+        3 → WM
+----------------------------------------------------------------*/
 float segmented_accuracy()
 {
+    /* If GT is not loaded (NULL), skip evaluation */
     if (GroundTruth == NULL)
     {
-        printf("\n⚠ Skipping accuracy calculation — No Ground Truth available.\n");
+        printf("\n Skipping accuracy calculation — No Ground Truth available.\n");
         return -1.0;
     }
+
+    /* Class labels for readability */
+    const char *ClassName[4] = { "Background", "CSF", "GM", "WM" };
 
     int ImageIndex, RowIndex, ColumnIndex, ClassIndex;
     int class_pt, class_gt;
 
-    double si = 0.0;
-    double Similarity_index;
+    double si = 0.0;               // Sum of Dice values (for overall metric)
+    double Similarity_index = 0.0; // Final average Dice %
 
-    /* Allocate counters */
-    ori_pt = (int *)calloc(CLASS, sizeof(int));           // |prediction per class|
-    ori_gt = (int *)calloc(CLASS, sizeof(int));           // |ground truth per class|
-    common = (int *)calloc(CLASS, sizeof(int));           // |intersection per class|
+    /*-------------------------------------------------------------
+       Allocate counters:
+         ori_pt[class]  = number of predicted voxels for class
+         ori_gt[class]  = number of ground truth voxels for class
+         common[class]  = number of voxels correctly predicted
+    --------------------------------------------------------------*/
+    ori_pt = (int *)calloc(CLASS, sizeof(int));
+    ori_gt = (int *)calloc(CLASS, sizeof(int));
+    common = (int *)calloc(CLASS, sizeof(int));
     double *sa = (double *)calloc(CLASS, sizeof(double)); // per-class accuracy
 
-    /*-----------------------------------------
-      Count predicted label frequency per class
-    ------------------------------------------*/
+    /*-------------------------------------------------------------
+       1. Count predicted label frequency for each tissue class
+    --------------------------------------------------------------*/
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
             for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
@@ -2442,9 +2443,9 @@ float segmented_accuracy()
                     ori_pt[class_pt]++;
             }
 
-    /*-----------------------------------------
-      Count ground truth label frequency
-    ------------------------------------------*/
+    /*-------------------------------------------------------------
+       2. Count ground truth label frequency for each tissue class
+    --------------------------------------------------------------*/
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
             for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
@@ -2454,9 +2455,9 @@ float segmented_accuracy()
                     ori_gt[class_gt]++;
             }
 
-    /*-----------------------------------------
-      Count correct matches (intersection)
-    ------------------------------------------*/
+    /*-------------------------------------------------------------
+       3. Count correct matches (intersection between prediction & GT)
+    --------------------------------------------------------------*/
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
             for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
@@ -2469,24 +2470,42 @@ float segmented_accuracy()
                 }
             }
 
-    /*-----------------------------------------
-       Compute Dice similarity and Per-Class SA
-    ------------------------------------------*/
+    /*-------------------------------------------------------------
+       4. Compute Dice coefficient and class accuracy
+          Dice(class) = 2·TP / (|Predicted| + |GT|)
+          Accuracy    = TP / |GT|
+    --------------------------------------------------------------*/
     printf("\n================ Segmentation Accuracy Report ================\n");
 
     for (ClassIndex = 0; ClassIndex < CLASS; ClassIndex++)
     {
         double deno = (double)(ori_pt[ClassIndex] + ori_gt[ClassIndex]);
-        double dice = (deno > 0) ? (2.0 * common[ClassIndex]) / deno : 0.0;
-        double accuracy = (ori_gt[ClassIndex] > 0) ? (double)common[ClassIndex] / ori_gt[ClassIndex] : 0.0;
+
+        /* Dice similarity for this class */
+        double dice = (deno > 0)
+                        ? (2.0 * common[ClassIndex]) / deno
+                        : 0.0;
+
+        /* Per-class accuracy (sensitivity/recall) */
+        double accuracy = (ori_gt[ClassIndex] > 0)
+                            ? (double)common[ClassIndex] / ori_gt[ClassIndex]
+                            : 0.0;
 
         sa[ClassIndex] = accuracy;
         si += dice;
 
-        printf("\nClass %d → Dice: %.4f   |   Accuracy: %.4f",
-               ClassIndex, dice, accuracy);
+        /* Convert to percentages for display */
+        double dice_percent = dice * 100.0;
+        double acc_percent  = accuracy * 100.0;
+
+        /* Print results with tissue names */
+        printf("\n%-10s → Dice: %.2f%%   |   Accuracy: %.2f%%",
+               ClassName[ClassIndex], dice_percent, acc_percent);
     }
 
+    /*-------------------------------------------------------------
+       5. Compute overall Dice (mean of class Dice values)
+    --------------------------------------------------------------*/
     Similarity_index = (si / CLASS) * 100.0;
 
     printf("\n--------------------------------------------------------------");
@@ -2495,6 +2514,7 @@ float segmented_accuracy()
 
     return Similarity_index;
 }
+
 
 /*-------------------------------------------------------------------------------------------------------------------------------
     Function: create_clusterfilescsf()
@@ -2519,47 +2539,41 @@ int create_clusterfilescsf()
     int ImageIndex, RowIndex, ColumnIndex;
     char File[100];
 
+    printf("\nGenerating CSF mask slices...\n");
+
     for (ImageIndex = 0; ImageIndex < TN; ImageIndex++)
     {
-        /* Build output filename for this slice */
+        /* Build output filename */
         sprintf(File, "%s_CSF_%03d.pgm", FileName, ImageIndex);
 
-        // printf("\nCSF mask file: %s\n", File);
-
-        /* Open output PGM file */
         fp_csflst = fopen(File, "w");
         if (fp_csflst == NULL)
         {
-            printf("Can't open the CSF file: %s\n", File);
+            printf("Error: Can't open CSF file: %s\n", File);
             exit(1);
         }
 
-        /* Write PGM header (ASCII P2) */
+        /* Write PGM header */
         fprintf(fp_csflst, "P2\n");
-        fprintf(fp_csflst, "# CSF segmentation mask generated from clustering\n");
+        fprintf(fp_csflst, "# CSF mask\n");
         fprintf(fp_csflst, "%d %d\n", COL, ROW);
         fprintf(fp_csflst, "255\n");
 
-        /* For each voxel: 255 if CSF (class 1), else 0 */
         for (RowIndex = 0; RowIndex < ROW; RowIndex++)
         {
             for (ColumnIndex = 0; ColumnIndex < COL; ColumnIndex++)
             {
-                if (img_cluster[ImageIndex][RowIndex][ColumnIndex] == 1)
-                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 255.0;
-                else
-                    ImageVolume[ImageIndex][RowIndex][ColumnIndex] = 0.0;
-
-                fprintf(fp_csflst, "%d ",
-                        (int)ImageVolume[ImageIndex][RowIndex][ColumnIndex]);
+                /* Class 1 → CSF, else 0 */
+                int pixel = (img_cluster[ImageIndex][RowIndex][ColumnIndex] == 1) ? 255 : 0;
+                fprintf(fp_csflst, "%d ", pixel);
             }
             fprintf(fp_csflst, "\n");
         }
 
         fclose(fp_csflst);
-        
     }
-    printf("CSF slice %d written successfully.\n", ImageIndex);
+
+    printf("\n CSF masks generated successfully (%d slices written).\n", TN);
 
     return 0;
 }
@@ -2625,9 +2639,8 @@ int create_clusterfilesgm()
         }
 
         fclose(fp_gmlst);
-        
     }
-printf("GM slice written successfully.\n", ImageIndex);
+    printf("\n GM masks generated successfully (%d slices written).\n", TN);
     return 0;
 }
 
@@ -2693,10 +2706,8 @@ int create_clusterfileswm()
         }
 
         fclose(fp_wmlst);
-        
     }
-    printf("WM slice written successfully.\n", ImageIndex);
-
+    printf("\n WM masks generated successfully (%d slices written).\n", TN);
     return 0;
 }
 
@@ -3115,45 +3126,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-
-
-Algorithm terminates successfully ...
-
------------------- Updated Cluster Centers (Entropy-Driven Model) ------------------
-
-Class 0 Centers:  V[0][0] = 6.074  V[0][1] = 6.647  V[0][2] = 6.647  V[0][3] = 6.613  V[0][4] = 6.556  V[0][5] = 6.318  V[0][6] = 6.359  V[0][7] = 6.121
-Class 1 Centers:  V[1][0] = 69.468  V[1][1] = 71.120  V[1][2] = 71.102  V[1][3] = 70.850  V[1][4] = 70.716  V[1][5] = 69.896  V[1][6] = 70.072  V[1][7] = 70.343        
-Class 2 Centers:  V[2][0] = 115.699  V[2][1] = 115.258  V[2][2] = 115.234  V[2][3] = 115.393  V[2][4] = 115.443  V[2][5] = 115.548  V[2][6] = 115.582  V[2][7] = 115.701
-Class 3 Centers:  V[3][0] = 144.195  V[3][1] = 140.775  V[3][2] = 140.842  V[3][3] = 141.266  V[3][4] = 141.404  V[3][5] = 142.518  V[3][6] = 142.620  V[3][7] = 143.179
-------------------------------------------------------------------------------------
-
-
-Γ£ö Final segmentation class map generated successfully.
-
-Γ£ö ImageVolume successfully overwritten using averaged feature values.
-
-GT voxel size (file): 1 bytes
-Reading high-res GT volume: 362 x 434 x 362 = 56873096 voxels
-Resampling GT to T1 grid (TN=51, ROW=256, COL=256)...
-
-GT resampling completed.
-
-================ Segmentation Accuracy Report ================
-
-Class 0 ΓåÆ Dice: 0.9717   |   Accuracy: 0.9999
-Class 1 ΓåÆ Dice: 0.5031   |   Accuracy: 0.9590
-Class 2 ΓåÆ Dice: 0.8279   |   Accuracy: 0.9462
-Class 3 ΓåÆ Dice: 0.7898   |   Accuracy: 0.7002
---------------------------------------------------------------
-Overall Dice Similarity Index = 77.31%
-==============================================================
-CSF slice 51 written successfully.
-GM slice written successfully.
-WM slice written successfully.
-
-        Fuzzy Partition Coefficient (Vpc) = 0.937672
-
-        Partition Entropy (Vpe) = 0.087140
-
-PS C:\Users\jksing\Desktop\Abhishek gi\MtechThesis> 
-
